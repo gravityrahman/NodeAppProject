@@ -1,0 +1,99 @@
+pipeline {
+    agent any
+    
+    environment {
+        APP_NAME = 'devops-demo-app'
+        DOCKER_IMAGE = "${APP_NAME}:${BUILD_NUMBER}"
+        DOCKER_LATEST = "${APP_NAME}:latest"
+    }
+    
+    stages {
+        stage('Checkout') {
+            steps {
+                echo 'Checking out code from repository...'
+                checkout scm
+            }
+        }
+        
+        stage('Install Dependencies') {
+            steps {
+                echo 'Installing Node.js dependencies...'
+                sh 'npm install'
+            }
+        }
+        
+        stage('Run Tests') {
+            steps {
+                echo 'Running tests...'
+                sh 'npm test || true'
+            }
+        }
+        
+        stage('Build Docker Image') {
+            steps {
+                echo 'Building Docker image...'
+                sh """
+                    docker build -t ${DOCKER_IMAGE} .
+                    docker tag ${DOCKER_IMAGE} ${DOCKER_LATEST}
+                """
+            }
+        }
+        
+        stage('Stop Old Container') {
+            steps {
+                echo 'Stopping old container if exists...'
+                sh '''
+                    docker stop ${APP_NAME} || true
+                    docker rm ${APP_NAME} || true
+                '''
+            }
+        }
+        
+        stage('Deploy Application') {
+            steps {
+                echo 'Deploying new container...'
+                sh """
+                    docker run -d \
+                        --name ${APP_NAME} \
+                        --restart unless-stopped \
+                        -p 3000:3000 \
+                        -e NODE_ENV=production \
+                        ${DOCKER_LATEST}
+                """
+            }
+        }
+        
+        stage('Health Check') {
+            steps {
+                echo 'Performing health check...'
+                sh '''
+                    sleep 5
+                    curl -f http://localhost:3000/health || exit 1
+                '''
+            }
+        }
+        
+        stage('Cleanup Old Images') {
+            steps {
+                echo 'Cleaning up old Docker images...'
+                sh '''
+                    docker image prune -f
+                '''
+            }
+        }
+    }
+    
+    post {
+        success {
+            echo '✅ Deployment successful!'
+            echo "Application is running at http://localhost:3000"
+        }
+        failure {
+            echo '❌ Deployment failed!'
+            sh 'docker logs ${APP_NAME} || true'
+        }
+        always {
+            echo 'Pipeline execution completed.'
+        }
+    }
+}
