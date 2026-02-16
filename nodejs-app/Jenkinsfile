@@ -1,5 +1,10 @@
 pipeline {
     agent any
+
+        tools {
+        nodejs 'NodeJS-24'  // Add this line - matches the name from Step 2
+    }
+
     
     environment {
         APP_NAME = 'devops-demo-app'
@@ -14,6 +19,12 @@ pipeline {
                 checkout scm
             }
         }
+        stage('Verify Node Installation') {
+            steps {
+                sh 'node --version'
+                sh 'npm --version'
+            }
+        }
         
         stage('Install Dependencies') {
             steps {
@@ -22,12 +33,19 @@ pipeline {
             }
         }
         
-        stage('Run Tests') {
-            steps {
-                echo 'Running tests...'
-                sh 'npm test || true'
-            }
-        }
+        // stage('Install Dependencies') {
+        //     steps {
+        //         echo 'Installing Node.js dependencies...'
+        //         sh 'npm install'
+        //     }
+        // }
+        
+        // stage('Run Tests') {
+        //     steps {
+        //         echo 'Running tests...'
+        //         sh 'npm test || true'
+        //     }
+        // }
         
         stage('Build Docker Image') {
             steps {
