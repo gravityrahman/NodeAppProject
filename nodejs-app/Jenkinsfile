@@ -2,14 +2,15 @@ pipeline {
     agent any
     
     tools {
-        nodejs 'NodeJS-24.13.1'  // Add this line - matches the name from Step 2
+        nodejs 'NodeJS-24.13.1'
     }
-
     
     environment {
         APP_NAME = 'devops-demo-app'
         DOCKER_IMAGE = "${APP_NAME}:${BUILD_NUMBER}"
         DOCKER_LATEST = "${APP_NAME}:latest"
+        // ⚠️ CHANGE THIS if your app is in a subdirectory
+        APP_DIR = 'nodejs-app'  // Or 'nodejs-app' if in subdirectory
     }
     
     stages {
@@ -19,43 +20,77 @@ pipeline {
                 checkout scm
             }
         }
+        
+        stage('Debug - Verify Files') {
+            steps {
+                echo '🔍 Checking workspace contents...'
+                sh '''
+                    echo "Current directory:"
+                    pwd
+                    
+                    echo ""
+                    echo "Files in workspace:"
+                    ls -la
+                    
+                    echo ""
+                    echo "Searching for package.json:"
+                    find . -name "package.json" -type f
+                    
+                    echo ""
+                    echo "Searching for Dockerfile:"
+                    find . -name "Dockerfile" -type f
+                    
+                    echo ""
+                    echo "Directory structure:"
+                    tree -L 2 || ls -R
+                '''
+            }
+        }
+        
         stage('Verify Node Installation') {
             steps {
-                dir('nodejs-app') {
-                    sh 'node --version'
-                    sh 'npm --version'
-                }
+                echo 'Verifying Node.js and npm versions...'
+                sh 'node --version'
+                sh 'npm --version'
             }
         }
         
         stage('Install Dependencies') {
             steps {
                 echo 'Installing Node.js dependencies...'
-                sh 'npm install'
+                dir("${APP_DIR}") {
+                    sh '''
+                        # Verify package.json exists
+                        if [ ! -f package.json ]; then
+                            echo "❌ ERROR: package.json not found in $(pwd)"
+                            echo "Available files:"
+                            ls -la
+                            exit 1
+                        fi
+                        
+                        echo "✅ package.json found"
+                        npm install
+                    '''
+                }
             }
         }
-        
-        // stage('Install Dependencies') {
-        //     steps {
-        //         echo 'Installing Node.js dependencies...'
-        //         sh 'npm install'
-        //     }
-        // }
-        
-        // stage('Run Tests') {
-        //     steps {
-        //         echo 'Running tests...'
-        //         sh 'npm test || true'
-        //     }
-        // }
         
         stage('Build Docker Image') {
             steps {
                 echo 'Building Docker image...'
-                sh """
-                    docker build -t ${DOCKER_IMAGE} .
-                    docker tag ${DOCKER_IMAGE} ${DOCKER_LATEST}
-                """
+                dir("${APP_DIR}") {
+                    sh '''
+                        # Verify Dockerfile exists
+                        if [ ! -f Dockerfile ]; then
+                            echo "❌ ERROR: Dockerfile not found in $(pwd)"
+                            exit 1
+                        fi
+                        
+                        echo "✅ Dockerfile found"
+                        docker build -t ${DOCKER_IMAGE} .
+                        docker tag ${DOCKER_IMAGE} ${DOCKER_LATEST}
+                    '''
+                }
             }
         }
         
@@ -87,8 +122,13 @@ pipeline {
             steps {
                 echo 'Performing health check...'
                 sh '''
-                    sleep 5
+                    echo "Waiting for application to start..."
+                    sleep 10
+                    
+                    echo "Testing health endpoint..."
                     curl -f http://localhost:3000/health || exit 1
+                    
+                    echo "✅ Application is healthy"
                 '''
             }
         }
@@ -96,21 +136,30 @@ pipeline {
         stage('Cleanup Old Images') {
             steps {
                 echo 'Cleaning up old Docker images...'
-                sh '''
-                    docker image prune -f
-                '''
+                sh 'docker image prune -f'
             }
         }
     }
     
     post {
         success {
-            echo '✅ Deployment successful!'
-            echo "Application is running at http://localhost:3000"
+            echo '✅ ======================================'
+            echo '✅ Deployment Successful!'
+            echo '✅ ======================================'
+            echo "Application: ${APP_NAME}"
+            echo "Build: ${BUILD_NUMBER}"
+            echo "URL: http://localhost:3000"
+            echo '✅ ======================================'
         }
         failure {
-            echo '❌ Deployment failed!'
+            echo '❌ ======================================'
+            echo '❌ Deployment Failed!'
+            echo '❌ ======================================'
+            echo 'Checking application logs...'
             sh 'docker logs ${APP_NAME} || true'
+            echo ''
+            echo 'Workspace contents:'
+            sh 'ls -la || true'
         }
         always {
             echo 'Pipeline execution completed.'
