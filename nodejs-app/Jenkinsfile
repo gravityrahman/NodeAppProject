@@ -1,7 +1,7 @@
 pipeline {
     agent any
-
-        tools {
+    
+    tools {
         nodejs 'NodeJS-24.13.1'  // Add this line - matches the name from Step 2
     }
 
