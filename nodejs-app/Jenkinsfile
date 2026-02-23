@@ -21,8 +21,10 @@ pipeline {
         }
         stage('Verify Node Installation') {
             steps {
-                sh 'node --version'
-                sh 'npm --version'
+                dir('nodejs-app') {
+                    sh 'node --version'
+                    sh 'npm --version'
+                }
             }
         }
         
