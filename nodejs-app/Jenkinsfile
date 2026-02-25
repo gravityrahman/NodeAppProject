@@ -10,7 +10,7 @@ pipeline {
         DOCKER_IMAGE = "${APP_NAME}:${BUILD_NUMBER}"
         DOCKER_LATEST = "${APP_NAME}:latest"
         APP_DIR = 'nodejs-app'
-        EC2_HOST = '10.0.1.230'              // ⚠️ CHANGE: Your EC2 private/public IP
+        EC2_HOST = '15.237.188.198'              // ⚠️ CHANGE: Your EC2 private/public IP
         EC2_USER = 'ubuntu'                 // EC2 username
         DEPLOY_PATH = '/var/www/nodejs-app' // Deployment directory on EC2
         SSH_CREDENTIALS_ID = 'ec2-ssh-key'  // ⚠️ CHANGE: Jenkins SSH credential ID
