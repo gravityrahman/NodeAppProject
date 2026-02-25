@@ -2,15 +2,19 @@ pipeline {
     agent any
     
     tools {
-        nodejs 'NodeJS-24.13.1'
+        nodejs 'NodeJS-25.7.0'
     }
     
     environment {
         APP_NAME = 'devops-demo-app'
         DOCKER_IMAGE = "${APP_NAME}:${BUILD_NUMBER}"
         DOCKER_LATEST = "${APP_NAME}:latest"
-        // ⚠️ CHANGE THIS if your app is in a subdirectory
-        APP_DIR = 'nodejs-app'  // Or 'nodejs-app' if in subdirectory
+        APP_DIR = 'nodejs-app'
+        EC2_HOST = '10.0.1.230'              // ⚠️ CHANGE: Your EC2 private/public IP
+        EC2_USER = 'ubuntu'                 // EC2 username
+        DEPLOY_PATH = '/var/www/nodejs-app' // Deployment directory on EC2
+        SSH_CREDENTIALS_ID = 'ec2-ssh-key'  // ⚠️ CHANGE: Jenkins SSH credential ID
+        APP_PORT = '3000'                   // Application port
     }
     
     stages {
@@ -103,66 +107,250 @@ pipeline {
                 '''
             }
         }
-        
-        stage('Deploy Application') {
+
+        stage('Create Deployment Package') {
             steps {
-                echo 'Deploying new container...'
-                sh """
-                    docker run -d \
-                        --name ${APP_NAME} \
-                        --restart unless-stopped \
-                        -p 3000:3000 \
-                        -e NODE_ENV=production \
-                        ${DOCKER_LATEST}
-                """
-            }
-        }
-        
-        stage('Health Check') {
-            steps {
-                echo 'Performing health check...'
+                echo '📦 Creating deployment package...'
                 sh '''
-                    echo "Waiting for application to start..."
-                    sleep 10
+                    # Create deployment directory
+                    mkdir -p deploy
                     
-                    echo "Testing health endpoint..."
-                    curl -f http://localhost:3000/health || exit 1
+                    # Create tarball with application files
+                    tar -czf deploy/app-${BUILD_NUMBER}.tar.gz \
+                        --exclude='node_modules' \
+                        --exclude='.git' \
+                        --exclude='deploy' \
+                        --exclude='coverage' \
+                        --exclude='*.log' \
+                        --exclude='.env' \
+                        .
                     
-                    echo "✅ Application is healthy"
+                    echo "✅ Package created: app-${BUILD_NUMBER}.tar.gz"
+                    ls -lh deploy/
                 '''
             }
         }
-        
-        stage('Cleanup Old Images') {
+
+        stage('Prepare EC2 Instance') {
             steps {
-                echo 'Cleaning up old Docker images...'
-                sh 'docker image prune -f'
+                echo '🔧 Preparing EC2 instance...'
+                sshagent(credentials: ["${SSH_CREDENTIALS_ID}"]) {
+                    sh '''
+                        # Create deployment directory on EC2
+                        ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} "
+                            # Create directory structure
+                            sudo mkdir -p ${DEPLOY_PATH}
+                            sudo chown -R ${EC2_USER}:${EC2_USER} ${DEPLOY_PATH}
+                            
+                            # Install Node.js if not present
+                            if ! command -v node &> /dev/null; then
+                                echo 'Installing Node.js...'
+                                curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
+                                sudo apt install -y nodejs
+                            fi
+                            
+                            # Install PM2 if not present
+                            if ! command -v pm2 &> /dev/null; then
+                                echo 'Installing PM2...'
+                                sudo npm install -g pm2
+                            fi
+                            
+                            echo 'Node version:' \$(node --version)
+                            echo 'NPM version:' \$(npm --version)
+                            echo 'PM2 version:' \$(pm2 --version)
+                        "
+                    '''
+                }
+            }
+        }
+
+        stage('Upload to EC2') {
+            steps {
+                echo '📤 Uploading application to EC2...'
+                sshagent(credentials: ["${SSH_CREDENTIALS_ID}"]) {
+                    sh '''
+                        # Upload package to EC2
+                        scp -o StrictHostKeyChecking=no \
+                            deploy/app-${BUILD_NUMBER}.tar.gz \
+                            ${EC2_USER}@${EC2_HOST}:/tmp/
+                        
+                        echo "✅ Upload completed"
+                    '''
+                }
+            }
+        }
+
+        stage('Deploy on EC2') {
+            steps {
+                echo '🚀 Deploying application on EC2...'
+                sshagent(credentials: ["${SSH_CREDENTIALS_ID}"]) {
+                    sh '''
+                        ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} "
+                            set -e
+                            
+                            echo '1. Creating backup of current deployment...'
+                            if [ -d ${DEPLOY_PATH}/current ]; then
+                                sudo mv ${DEPLOY_PATH}/current ${DEPLOY_PATH}/backup-\$(date +%Y%m%d-%H%M%S) || true
+                            fi
+                            
+                            echo '2. Creating new release directory...'
+                            mkdir -p ${DEPLOY_PATH}/release-${BUILD_NUMBER}
+                            
+                            echo '3. Extracting application...'
+                            tar -xzf /tmp/app-${BUILD_NUMBER}.tar.gz -C ${DEPLOY_PATH}/release-${BUILD_NUMBER}
+                            
+                            echo '4. Creating symlink to current release...'
+                            ln -sfn ${DEPLOY_PATH}/release-${BUILD_NUMBER} ${DEPLOY_PATH}/current
+                            
+                            echo '5. Installing dependencies...'
+                            cd ${DEPLOY_PATH}/current
+                            npm install --production
+                            
+                            echo '6. Cleaning up...'
+                            rm -f /tmp/app-${BUILD_NUMBER}.tar.gz
+                            
+                            # Keep only last 3 releases
+                            cd ${DEPLOY_PATH}
+                            ls -dt release-* | tail -n +4 | xargs rm -rf 2>/dev/null || true
+                            
+                            # Keep only last 2 backups
+                            ls -dt backup-* 2>/dev/null | tail -n +3 | xargs rm -rf 2>/dev/null || true
+                            
+                            echo '✅ Deployment completed'
+                        "
+                    '''
+                }
+            }
+        }
+        
+        stage('Restart Application') {
+            steps {
+                echo '🔄 Restarting application with PM2...'
+                sshagent(credentials: ["${SSH_CREDENTIALS_ID}"]) {
+                    sh '''
+                        ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} "
+                            cd ${DEPLOY_PATH}/current
+                            
+                            # Stop existing PM2 process
+                            pm2 delete ${APP_NAME} 2>/dev/null || true
+                            
+                            # Start application with PM2
+                            pm2 start server.js --name ${APP_NAME} -i max
+                            
+                            # Save PM2 configuration
+                            pm2 save
+                            
+                            # Setup PM2 startup script (if not already done)
+                            sudo env PATH=\$PATH:/usr/bin pm2 startup systemd -u ${EC2_USER} --hp /home/${EC2_USER} || true
+                            
+                            # Display status
+                            pm2 status
+                            
+                            echo '✅ Application restarted'
+                        "
+                    '''
+                }
+            }
+        }
+
+         stage('Health Check') {
+            steps {
+                echo '=========================================='
+                echo '🏥 Performing health check...'
+                echo '=========================================='
+                sshagent(credentials: ["${SSH_CREDENTIALS_ID}"]) {
+                    sh '''
+                        ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} "
+                            echo 'Waiting for application to start...'
+                            sleep 5
+                            
+                            echo 'Testing application endpoint...'
+                            
+                            # Try health endpoint first
+                            if curl -f http://localhost:${APP_PORT}/health 2>/dev/null; then
+                                echo '✅ Health check passed: /health endpoint'
+                            elif curl -f http://localhost:${APP_PORT}/ 2>/dev/null; then
+                                echo '✅ Health check passed: root endpoint'
+                            else
+                                echo '❌ Health check failed!'
+                                echo 'Application logs:'
+                                pm2 logs ${APP_NAME} --lines 20 --nostream || true
+                                exit 1
+                            fi
+                            
+                            echo ''
+                            echo 'Application is running successfully!'
+                            echo 'PM2 Status:'
+                            pm2 status
+                        "
+                    '''
+                }
+            }
+        }
+
+         stage('Display Connection Info') {
+            steps {
+                echo '=========================================='
+                echo '📊 Deployment Information'
+                echo '=========================================='
+                sshagent(credentials: ["${SSH_CREDENTIALS_ID}"]) {
+                    sh '''
+                        ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} "
+                            PUBLIC_IP=\$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4 2>/dev/null || echo 'N/A')
+                            PRIVATE_IP=\$(hostname -I | awk '{print \$1}')
+                            
+                            echo ''
+                            echo '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'
+                            echo '  📍 Application Access Information'
+                            echo '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'
+                            echo ''
+                            echo '  🌐 Public URL:  http://'\$PUBLIC_IP':${APP_PORT}'
+                            echo '  🔒 Private URL: http://'\$PRIVATE_IP':${APP_PORT}'
+                            echo '  📦 Deployment:  ${DEPLOY_PATH}/current'
+                            echo '  🔢 Build:       ${BUILD_NUMBER}'
+                            echo '  👤 User:        ${EC2_USER}'
+                            echo ''
+                            echo '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'
+                        "
+                    '''
+                }
             }
         }
     }
-    
-    post {
+
+post {
         success {
-            echo '✅ ======================================'
-            echo '✅ Deployment Successful!'
-            echo '✅ ======================================'
+            echo ''
+            echo '╔═══════════════════════════════════════════╗'
+            echo '║   ✅ DEPLOYMENT SUCCESSFUL! ✅           ║'
+            echo '╚═══════════════════════════════════════════╝'
+            echo ''
             echo "Application: ${APP_NAME}"
-            echo "Build: ${BUILD_NUMBER}"
-            echo "URL: http://localhost:3000"
-            echo '✅ ======================================'
+            echo "Build Number: ${BUILD_NUMBER}"
+            echo "EC2 Instance: ${EC2_USER}@${EC2_HOST}"
+            echo "Deployment Path: ${DEPLOY_PATH}/current"
+            echo ''
+            echo 'Check the output above for access URLs'
+            echo ''
         }
         failure {
-            echo '❌ ======================================'
-            echo '❌ Deployment Failed!'
-            echo '❌ ======================================'
-            echo 'Checking application logs...'
-            sh 'docker logs ${APP_NAME} || true'
             echo ''
-            echo 'Workspace contents:'
-            sh 'ls -la || true'
+            echo '╔═══════════════════════════════════════════╗'
+            echo '║   ❌ DEPLOYMENT FAILED! ❌               ║'
+            echo '╚═══════════════════════════════════════════╝'
+            echo ''
+            echo 'Check the console output above for errors'
+            echo ''
+            echo 'Troubleshooting steps:'
+            echo '1. Verify SSH credentials are configured'
+            echo '2. Check EC2 instance is reachable'
+            echo '3. Verify security group allows SSH (port 22)'
+            echo '4. Check application logs on EC2'
+            echo ''
         }
         always {
-            echo 'Pipeline execution completed.'
+            echo 'Cleaning up workspace...'
+            sh 'rm -rf deploy'
         }
-    }
+    }      
 }
