@@ -114,7 +114,8 @@ pipeline {
                 sh '''
                     # Create deployment directory
                     mkdir -p deploy
-                    
+
+                    cd ${APP_DIR}
                     # Create tarball with application files
                     tar -czf deploy/app-${BUILD_NUMBER}.tar.gz \
                         --exclude='node_modules' \
