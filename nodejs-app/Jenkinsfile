@@ -112,22 +112,20 @@ pipeline {
             steps {
                 echo '📦 Creating deployment package...'
                 sh '''
-                    # Create deployment directory
                     mkdir -p deploy
-
+        
                     cd ${APP_DIR}
-                    # Create tarball with application files
-                    tar -czf deploy/app-${BUILD_NUMBER}.tar.gz \
+        
+                    tar -czf ../deploy/app-${BUILD_NUMBER}.tar.gz \
                         --exclude='node_modules' \
                         --exclude='.git' \
-                        --exclude='deploy' \
                         --exclude='coverage' \
                         --exclude='*.log' \
                         --exclude='.env' \
                         .
-                    
-                    echo "✅ Package created: app-${BUILD_NUMBER}.tar.gz"
-                    ls -lh deploy/
+        
+                    echo "✅ Package created"
+                    tar -tzf ../deploy/app-${BUILD_NUMBER}.tar.gz | head
                 '''
             }
         }
