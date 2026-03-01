@@ -253,7 +253,7 @@ pipeline {
             }
         }
 
-         stage('Health Check') {
+        stage('Health Check') {
             steps {
                 echo '=========================================='
                 echo '🏥 Performing health check...'
@@ -288,7 +288,7 @@ pipeline {
             }
         }
 
-         stage('Display Connection Info') {
+        stage('Display Connection Info') {
             steps {
                 echo '=========================================='
                 echo '📊 Deployment Information'
@@ -317,8 +317,8 @@ pipeline {
             }
         }
     }
-
-post {
+    
+    post {
         success {
             echo ''
             echo '╔═══════════════════════════════════════════╗'
@@ -352,5 +352,5 @@ post {
             echo 'Cleaning up workspace...'
             sh 'rm -rf deploy'
         }
-    }      
+    }
 }
